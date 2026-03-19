@@ -1,0 +1,99 @@
+# ============================================================
+#  个性化论文推送系统 · 配置文件示例
+#  复制此文件为 config.yaml，填写所有 YOUR_xxx 占位符后即可运行
+# ============================================================
+
+# ── 研究方向（DeepSeek 评分的核心依据）─────────────────────
+research_profile:
+  directions:
+    - "Multimodal Large Language Model (MLLM/VLM) reasoning and understanding"
+    - "Video understanding, video question answering, video-language models"
+    - "Long video understanding, long-context video models, hour-long video"
+    - "LLM Agent, tool use, planning, and agentic systems"
+    - "Temporal grounding, moment retrieval, video segment localization"
+  keywords:
+    high_priority:
+      # 视频理解
+      - video understanding
+      - video language
+      - video question
+      - video QA
+      - video reasoning
+      - long video
+      - hour-long video
+      - video-llm
+      - videollm
+      - video agent
+      # 时序定位
+      - temporal grounding
+      - moment retrieval
+      - temporal localization
+      - video grounding
+      - natural language video
+      # 多模态
+      - multimodal
+      - multi-modal
+      - vision-language
+      - vision language model
+      - VLM
+      - MLLM
+      - LMM
+      # Agent
+      - agent
+      - agentic
+      - tool use
+      - tool-use
+    medium_priority:
+      - LLM
+      - large language model
+      - reasoning
+      - grounding
+      - visual grounding
+      - instruction tuning
+      - instruction following
+      - chain-of-thought
+      - hallucination
+      - benchmark
+      - visual understanding
+      - image understanding
+      - embodied
+
+# ── arXiv 数据源 ─────────────────────────────────────────────
+arxiv:
+  categories:
+    - cs.CV    # Computer Vision
+    - cs.AI    # Artificial Intelligence
+    - cs.LG    # Machine Learning
+    - cs.CL    # Computation and Language
+    - cs.RO    # Robotics（Agent相关）
+
+# ── HuggingFace Daily Papers ──────────────────────────────────
+huggingface:
+  enabled: true
+  limit: 50   # 每日拉取论文数上限
+
+# ── DeepSeek LLM ─────────────────────────────────────────────
+llm:
+  api_key: "YOUR_DEEPSEEK_API_KEY"
+  api_url: "https://api.deepseek.com/v1/chat/completions"
+  model: "deepseek-chat"
+  score_threshold: 6    # 0-10，达到此分才进入摘要阶段
+  batch_size: 10        # 每次批量评分篇数（节省 API 调用次数）
+
+# ── 飞书配置 ──────────────────────────────────────────────────
+feishu:
+  # ① 群消息（必填）：飞书群 → 设置 → 添加机器人 → 自定义机器人 → Webhook URL
+  webhook_url: "YOUR_FEISHU_WEBHOOK_URL"
+
+  # ② 知识库文档（选填）：需创建飞书自建应用并授权 wiki + docx 权限
+  #    留空则跳过知识库写入，只推送群消息
+  #    配置方式：运行 py -3 _setup_wiki.py <your_wiki_url> 自动填写
+  app_id: ""           # 飞书应用 App ID（格式：cli_xxxxxxxxxxxxxxxx）
+  app_secret: ""       # 飞书应用 App Secret
+  wiki_space_id: ""    # 知识库空间 ID（运行 _setup_wiki.py 自动获取）
+  wiki_parent_node: "" # 日报存放的父节点 token（运行 _setup_wiki.py 自动获取）
+
+# ── 网络 ─────────────────────────────────────────────────────
+network:
+  request_timeout: 30   # 普通请求超时秒数
+  summary_timeout: 120  # 摘要生成超时秒数（DeepSeek 响应较慢时适当调大）
