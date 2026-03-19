@@ -1,63 +1,138 @@
-# 论文推送系统
+﻿# Paper Push
 
-这是一个面向日常使用的论文推送工具。系统会按设定的时间窗口抓取论文，完成关键词筛选、LLM 评分、中文总结，并把结果推送到飞书。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-当前包含两条独立输出：
+`paper_push` is a paper-intelligence system for researchers and labs.
 
-- 论文日报
-- 会议论文监控
+It is built around three things:
 
-## 系统会做什么
+- Incremental paper collection with lower miss risk
+- Conference monitoring for target venues
+- Multi-output delivery for local files and chat platforms
 
-每天运行时，系统会：
+The pipeline fetches papers from `arXiv` and `Hugging Face Daily Papers`, filters them by your research profile, scores relevance with DeepSeek, generates Chinese summaries, and publishes the result to Feishu, Telegram, Slack, or local files.
 
-1. 从 `arXiv` 和 `Hugging Face Daily Papers` 抓取论文
-2. 按配置的研究方向做关键词过滤
-3. 调用 DeepSeek 进行相关性评分
-4. 为入选论文生成中文总结
-5. 把日报发送到飞书
-6. 检查已配置会议是否有新发布论文
-7. 发送一张会议监控卡片
+## Demo Preview
 
-## 飞书里的表现
+![Paper Push Demo Preview](docs/assets/paper-push-demo.gif)
 
-### 论文日报
+### Screenshots
 
-- 如果当天有入选论文：
-  - 群里会收到一张候选总览卡片
-  - 可以在群里回复序号，选择要写入知识库的论文
-- 如果当天没有入选论文：
-  - 群里会收到一张空日报卡片
+![Output Index](docs/assets/paper-push-output-index.png)
 
-### 会议论文监控
+![Daily Demo](docs/assets/paper-push-daily-demo.png)
 
-- 每次运行都会发一张会议监控卡片
-- 会显示：
-  - 今日是否检测到会议论文新增
-  - 哪些会议有新增
-  - 哪些会议在当前年份窗口内暂未发布
-- 不会在卡片里显示抓取失败详情，错误只保留在本地日志
+![Conference Demo](docs/assets/paper-push-conference-demo.png)
 
-## 运行前准备
+## Quickstart
 
-先安装依赖：
+If you want screenshot-ready demo assets without configuring any APIs, run:
 
 ```powershell
-pip install -r requirements.txt
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py demo
 ```
 
-然后复制示例配置：
+This writes a polished local showcase into `output/` using built-in sample papers and conference data. It is the fastest path for README screenshots, GIF capture, and static previews.
+
+If you want the real pipeline next, run the local output path:
+
+```powershell
+copy config.yaml.example config.yaml
+.\.venv\Scripts\python.exe main.py daily --dry-run --output markdown --output html
+```
+
+This writes to `output/`:
+
+- `daily_latest.md`
+- `daily_latest.html`
+- `conference_latest.md`
+- `conference_latest.html`
+- `index.html`
+
+If you want a built-in research profile instead of editing keywords first:
+
+```powershell
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --dry-run --output markdown --output html
+```
+
+Available presets:
+
+- `multimodal`
+- `vision`
+- `nlp`
+- `agents`
+
+## Commands
+
+`main.py` now supports subcommands:
+
+- `daily`
+  Runs the normal daily pipeline, then conference monitoring.
+- `conference`
+  Runs only the conference monitor path.
+- `demo`
+  Generates screenshot-ready local artifacts with built-in sample content.
+
+Examples:
+
+```powershell
+.\.venv\Scripts\python.exe main.py demo
+.\.venv\Scripts\python.exe main.py daily --output markdown --output telegram
+.\.venv\Scripts\python.exe main.py conference --output html --output slack
+py -3 main.py --seed-conference-baseline
+```
+
+If you omit the subcommand, the default behavior remains the normal daily flow.
+
+## Output Modes
+
+The `runtime.outputs` config field and the `--output` flag support:
+
+- `feishu`
+- `markdown`
+- `html`
+- `telegram`
+- `slack`
+
+You can mix outputs freely. For example, local files are useful for inspection, while Telegram or Slack is useful for team delivery.
+
+## Standout Feature
+
+Conference monitoring is a first-class feature, not a side effect of the daily digest.
+
+Every normal run also checks whether configured conferences have new papers. The monitor reports:
+
+- Whether the current run found new conference papers
+- Which venues have new papers
+- Which venues are still unreleased in the current year window
+
+If you want to initialize the conference baseline from currently visible papers without summaries or pushes:
+
+```powershell
+py -3 main.py --seed-conference-baseline
+```
+
+The local output path also renders dedicated conference reports, so the latest venue status is easy to open in a browser or share as a file.
+
+## Configuration
+
+Copy the example config and fill in the fields you need:
 
 ```powershell
 copy config.yaml.example config.yaml
 ```
 
-至少需要填写这些配置：
+For local output, you still need:
 
 - `llm.api_key`
+
+If you enable Feishu output, also set:
+
 - `feishu.webhook_url`
 
-如果要启用群内交互和知识库写入，还需要：
+If you enable interactive Feishu selection and knowledge-base writing, also set:
 
 - `feishu.chat_id`
 - `feishu.app_id`
@@ -65,183 +140,30 @@ copy config.yaml.example config.yaml
 - `feishu.wiki_space_id`
 - `feishu.wiki_parent_node`
 
-建议：
+If you enable Telegram or Slack output, also set:
 
-- 不要把真实配置提交到 GitHub
-- 优先通过环境变量覆盖敏感字段
+- `telegram.bot_token`
+- `telegram.chat_id`
+- `slack.webhook_url`
 
-## 日常运行
+Missing required fields fail fast at startup with a clear message.
 
-### 实时运行
+## Local Artifacts
 
-推荐使用：
+The local writer produces both archive files and stable `latest` files:
 
-```powershell
-.\run_daily_live.ps1
-```
+- `daily_report_YYYYMMDD_HHMMSS.md`
+- `daily_report_YYYYMMDD_HHMMSS.html`
+- `daily_latest.md`
+- `daily_latest.html`
+- `conference_report_YYYYMMDD_HHMMSS.md`
+- `conference_report_YYYYMMDD_HHMMSS.html`
+- `conference_latest.md`
+- `conference_latest.html`
+- `index.html`
 
-这个脚本会：
+## Security
 
-- 以无缓冲模式运行 `main.py`
-- 在终端实时输出进度
-- 同时把日志写入 `logs/`
-
-### 干跑模式
-
-如果只想检查流程，不希望真的推送飞书：
-
-```powershell
-.\run_daily_live.ps1 --dry-run
-```
-
-`--dry-run` 会跳过：
-
-- 飞书消息推送
-- 飞书知识库写入
-- 本地状态更新
-
-但仍然会真实执行抓取、过滤、评分等主要逻辑。
-
-## 自动运行
-
-系统已经可以通过 Windows 任务计划程序定时运行。
-
-当前推荐方案是：
-
-- 每天早上 `08:00` 启动
-- 大约 `09:00` 前后完成当日推送
-
-如果使用任务计划程序，实际执行的是：
-
-```powershell
-.\run_daily_live.ps1
-```
-
-## 增量抓取逻辑
-
-系统不是简单地抓“今天的页面快照”，而是按时间窗口增量抓取。
-
-默认配置：
-
-```yaml
-fetch:
-  initial_lookback_hours: 48
-  overlap_hours: 18
-```
-
-含义：
-
-- 首次运行时，默认回看最近 48 小时
-- 后续运行时，从“上次成功运行时间 - 18 小时”重新开始抓取
-- 最后再通过本地数据库去重
-
-这样做的目的是减少漏抓风险。
-
-运行状态保存在：
-
-- `db/runtime_state.json`
-
-## 会议论文监控逻辑
-
-会议监控和日报是两条独立流程。
-
-当前逻辑：
-
-- 只监控配置中启用的会议
-- 只抓当前年份和下一年份窗口
-- 已抓到的会议论文会写入本地数据库作为基线
-- 后续只把“第一次看到”的会议论文当成新增
-
-会议状态保存在：
-
-- `db/conference_state.json`
-
-如果你需要把当前已发布会议论文直接作为基线写入数据库，可以运行：
-
-```powershell
-py -3 main.py --seed-conference-baseline
-```
-
-这个命令会：
-
-- 抓取当前可见会议论文
-- 直接写入数据库
-- 更新会议状态文件
-- 不补摘要
-- 不评分
-- 不推送飞书
-
-## 数据文件
-
-主要本地数据包括：
-
-- `db/papers.db`
-  - 论文去重、评分、发送状态
-- `db/runtime_state.json`
-  - 日报增量抓取时间
-- `db/conference_state.json`
-  - 会议监控初始化状态
-- `logs/`
-  - 每次运行的本地日志
-
-## 重新推送数据库中的论文
-
-如果要把数据库里已有的高分论文重新整理并推送，可以用：
-
-```powershell
-py -3 repush.py --limit 3 --poll-timeout 10
-```
-
-常用参数：
-
-- `--limit`
-  - 只处理前 N 篇高分论文
-- `--poll-timeout`
-  - 群内回复等待时间，单位分钟
-- `--dry-run`
-  - 只跑流程，不做真实推送
-
-## 常见问题
-
-### 1. 为什么会收到空日报？
-
-因为系统会保证每天都有日报输出。
-
-出现空日报通常代表：
-
-- 当前时间窗口内没有新论文
-- 或者有新论文，但没有论文达到筛选阈值
-
-### 2. 为什么会议监控里会显示“暂未发布”？
-
-这表示：
-
-- 当前年份窗口内，会议页面还没有正式发布
-- 这不是错误
-
-### 3. 为什么终端里会看到抓取错误，但卡片里没有？
-
-因为会议卡片只面向日常阅读，不展示底层抓取异常。  
-具体抓取错误只写在本地日志中，方便排查。
-
-## 目录说明
-
-```text
-paper_push/
-├─ main.py
-├─ repush.py
-├─ run_daily.bat
-├─ run_daily_live.ps1
-├─ config.yaml.example
-├─ pipeline/
-├─ publishers/
-├─ sources/
-├─ tests/
-└─ db/
-```
-
-## 安全说明
-
-- `config.yaml` 包含敏感信息时，不应提交到 GitHub
-- `.gitignore` 已忽略 `config.yaml`
-- 推送前请再次确认 README、示例配置和日志里不包含真实密钥
+- Do not commit real secrets in `config.yaml`
+- `config.yaml` is already ignored by Git
+- Double-check logs and sample configs before sharing screenshots or publishing outputs

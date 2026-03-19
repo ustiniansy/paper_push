@@ -52,7 +52,7 @@ class ConferenceMonitorTests(unittest.TestCase):
             }
         )
 
-    @patch("pipeline.conference_monitor.push_conference_status")
+    @patch("pipeline.conference_monitor.publish_conference_status_outputs")
     @patch("pipeline.conference_monitor.score_papers")
     @patch("pipeline.conference_monitor.enrich_conference_papers")
     @patch("pipeline.conference_monitor.filter_unseen")
@@ -65,7 +65,7 @@ class ConferenceMonitorTests(unittest.TestCase):
         mock_filter_unseen,
         mock_enrich,
         mock_score,
-        mock_push,
+        mock_publish_status,
     ):
         mock_load_state.return_value = {
             "initialized": True,
@@ -83,7 +83,7 @@ class ConferenceMonitorTests(unittest.TestCase):
         self.assertEqual(summary["relevant_total"], 0)
         mock_enrich.assert_not_called()
         mock_score.assert_not_called()
-        mock_push.assert_called_once()
+        mock_publish_status.assert_called_once()
 
 
 if __name__ == "__main__":

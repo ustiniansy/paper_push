@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::UTF8
@@ -25,21 +25,23 @@ Write-Host "===================================================="
 Write-Host "Paper push runner starting..."
 Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Log file: $logPath"
+Write-Host "Default command: daily"
 Write-Host "===================================================="
 Write-Host ""
 
+$cliArgs = @("daily") + $args
 if ($python -eq "py") {
-    & py -3 -u main.py @args 2>&1 | Tee-Object -FilePath $logPath
+    & py -3 -u main.py @cliArgs 2>&1 | Tee-Object -FilePath $logPath
 } else {
-    & $python -u main.py @args 2>&1 | Tee-Object -FilePath $logPath
+    & $python -u main.py @cliArgs 2>&1 | Tee-Object -FilePath $logPath
 }
 
 $exitCode = $LASTEXITCODE
 Write-Host ""
 if ($exitCode -eq 0) {
-    Write-Host "[OK] main.py finished successfully."
+    Write-Host "[OK] main.py daily finished successfully."
 } else {
-    Write-Host "[ERROR] main.py failed. Check the terminal output or log file."
+    Write-Host "[ERROR] main.py daily failed. Check the terminal output or log file."
 }
 
 exit $exitCode

@@ -9,12 +9,10 @@ from typing import Callable, Dict, List, Optional
 from pipeline.dedup import mark_sent
 from pipeline.runtime_utils import is_dry_run, log
 from pipeline.summarizer import summarize_paper
-from publishers.feishu_docs import create_daily_document
-from publishers.feishu_webhook import (
-    poll_user_reply,
-    push_to_feishu,
-    send_candidate_card,
-    send_confirmation,
+from publishers.registry import (
+    choose_candidate_indices,
+    publish_daily_digest,
+    write_knowledge_base_outputs,
 )
 
 
@@ -62,33 +60,19 @@ def choose_papers_for_delivery(
     config: dict,
     poll_timeout_minutes: int = 60,
 ) -> List[Dict]:
-    """Send the candidate list and return the selected papers."""
+    """Use publisher capabilities to select the papers for delivery."""
     if is_dry_run(config):
-        log("DryRun", f"Skip Feishu selection. Keep all {len(papers)} papers.")
+        log("DryRun", f"Skip interactive selection. Keep all {len(papers)} papers.")
         return list(papers)
 
-    chat_id = config.get("feishu", {}).get("chat_id", "")
-    if chat_id:
-        msg_id = send_candidate_card(papers, config)
-        if not msg_id:
-            print("[FeishuBot] Candidate card failed. Fallback to webhook digest and keep all.")
-            push_to_feishu(papers, config)
-            indices = list(range(len(papers)))
-        else:
-            indices = poll_user_reply(
-                config,
-                total=len(papers),
-                timeout_minutes=poll_timeout_minutes,
-            )
-        chosen = [papers[index] for index in indices]
-        if chosen:
-            send_confirmation(
-                config,
-                f"Received. Preparing {len(chosen)} papers for the knowledge base.",
-            )
-        return chosen
+    indices = choose_candidate_indices(
+        papers,
+        config,
+        poll_timeout_minutes=poll_timeout_minutes,
+    )
+    if indices is not None:
+        return [papers[index] for index in indices]
 
-    push_to_feishu(papers, config)
     for index, paper in enumerate(papers, 1):
         src = "HF" if paper.get("source") == "huggingface" else "arXiv"
         upvotes = f" upvotes={paper['upvotes']}" if paper.get("upvotes", 0) > 0 else ""
@@ -105,21 +89,35 @@ def choose_papers_for_delivery(
 
 
 def write_selected_papers(chosen: List[Dict], config: dict) -> Optional[str]:
-    """Write selected papers to Feishu docs and mark them as sent."""
+    """Write selected papers to configured outputs and mark them as sent."""
     if not chosen:
         print("User skipped all papers. No knowledge-base write.")
         return None
 
     if is_dry_run(config):
+        for result in publish_daily_digest(chosen, config, allow_network=False):
+            if result.detail:
+                log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+            else:
+                log("Publisher", f"{result.target}: {result.status}")
         log("DryRun", f"Skip knowledge-base write and sent mark for {len(chosen)} papers.")
         return None
 
-    print(f"\nSelected {len(chosen)} papers. Writing to the knowledge base...")
-    print("\n[Step 7] Feishu docs")
-    doc_url = create_daily_document(chosen, config)
-    if doc_url:
-        send_confirmation(config, f"Done. Document updated: {doc_url}")
-    else:
-        send_confirmation(config, "Done.")
+    doc_url = None
+    kb_results = write_knowledge_base_outputs(chosen, config)
+    for result in kb_results:
+        if result.target == "feishu_docs" and result.status == "written":
+            doc_url = result.detail
+
+    for result in publish_daily_digest(chosen, config, doc_url=doc_url):
+        if result.detail:
+            log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+        else:
+            log("Publisher", f"{result.target}: {result.status}")
+    for result in kb_results:
+        if result.detail:
+            log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+        else:
+            log("Publisher", f"{result.target}: {result.status}")
     mark_sent(chosen)
     return doc_url

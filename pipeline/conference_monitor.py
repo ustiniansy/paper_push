@@ -14,7 +14,7 @@ from pipeline.llm_scorer import score_papers
 from pipeline.runtime_utils import ProgressBar, is_dry_run, log
 from pipeline.summarizer import summarize_paper
 from publishers.feishu_docs import create_daily_document
-from publishers.feishu_webhook import push_conference_status
+from publishers.registry import publish_conference_status_outputs
 from sources.conference_sources import enrich_conference_papers, fetch_conference_papers
 
 _STATE_PATH = os.path.join(
@@ -155,7 +155,8 @@ def run_conference_monitor(config: dict) -> dict:
         if dry_run:
             log("DryRun", "Skip conference initialization status push.")
         else:
-            push_conference_status(summary, config)
+            for result in publish_conference_status_outputs(summary, config):
+                log("Publisher", f"{result.target}: {result.status}")
         return summary
 
     seeded_venues: List[str] = []
@@ -201,7 +202,8 @@ def run_conference_monitor(config: dict) -> dict:
         if dry_run:
             log("DryRun", "Skip conference status push.")
         else:
-            push_conference_status(summary, config)
+            for result in publish_conference_status_outputs(summary, config):
+                log("Publisher", f"{result.target}: {result.status}")
         return summary
 
     enrich_conference_papers(new_papers, timeout=timeout)
@@ -300,5 +302,6 @@ def run_conference_monitor(config: dict) -> dict:
     if dry_run:
         log("DryRun", "Skip conference status push.")
     else:
-        push_conference_status(summary, config)
+        for result in publish_conference_status_outputs(summary, config):
+            log("Publisher", f"{result.target}: {result.status}")
     return summary

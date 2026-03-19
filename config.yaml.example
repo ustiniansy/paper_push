@@ -1,7 +1,12 @@
+﻿# ============================================================
+#  Personalized paper push system · example configuration
+#  Copy this file to config.yaml and fill in your secrets/output settings
 # ============================================================
-#  个性化论文推送系统 · 配置文件示例
-#  复制此文件为 config.yaml，并填入你的密钥和飞书配置
-# ============================================================
+
+# Fast start examples:
+# py -3 main.py daily --profile multimodal --dry-run --output markdown --output html
+# py -3 main.py conference --output html
+# Available presets: multimodal, vision, nlp, agents
 
 research_profile:
   directions:
@@ -90,6 +95,22 @@ fetch:
 
 runtime:
   dry_run: false
+  outputs:
+    - feishu
+    # - markdown
+    # - html
+    # - telegram
+    # - slack
+
+local_output:
+  output_dir: output
+
+telegram:
+  bot_token: ""
+  chat_id: ""
+
+slack:
+  webhook_url: ""
 
 conference_monitor:
   enabled: true

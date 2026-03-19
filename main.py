@@ -1,4 +1,4 @@
-"""
+﻿"""
 Personalized paper push system main entrypoint.
 """
 from __future__ import annotations
@@ -18,9 +18,12 @@ if sys.platform == "win32":
 import yaml
 
 from pipeline.conference_monitor import run_conference_monitor, seed_conference_baseline
+from pipeline.demo_artifacts import generate_demo_artifacts
+from pipeline.config_validation import ConfigValidationError, validate_config
 from pipeline.dedup import filter_unseen, mark_processed
 from pipeline.http_client import get_retry_session
 from pipeline.keyword_filter import keyword_filter
+from pipeline.profiles import apply_profile, available_profiles
 from pipeline.llm_scorer import score_papers
 from pipeline.publish_flow import (
     choose_papers_for_delivery,
@@ -28,7 +31,7 @@ from pipeline.publish_flow import (
     write_selected_papers,
 )
 from pipeline.runtime_utils import is_dry_run, log
-from publishers.feishu_webhook import push_to_feishu
+from publishers.registry import publish_daily_digest
 from sources.arxiv_source import fetch_arxiv_papers
 from sources.hf_source import fetch_hf_papers
 
@@ -39,16 +42,41 @@ _DEFAULT_OVERLAP_HOURS = 18
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run the daily paper push pipeline.")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run the pipeline without Feishu pushes, docs writes, or state updates.",
-    )
+    parser = argparse.ArgumentParser(description="Run the paper push pipeline.")
     parser.add_argument(
         "--seed-conference-baseline",
         action="store_true",
         help="Only fetch current conference papers and write them into the local DB baseline.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the pipeline without external pushes, docs writes, or state updates.",
+    )
+    parser.add_argument(
+        "--output",
+        action="append",
+        choices=["feishu", "markdown", "html", "telegram", "slack"],
+        help="Enable one or more output targets. Can be repeated.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=available_profiles(),
+        help="Use a built-in research profile preset.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser(
+        "daily",
+        help="Run the daily pipeline and then the conference monitor.",
+    )
+    subparsers.add_parser(
+        "conference",
+        help="Run only the conference monitor.",
+    )
+    subparsers.add_parser(
+        "demo",
+        help="Generate local demo artifacts for screenshots and GIFs.",
     )
     return parser.parse_args()
 
@@ -198,16 +226,24 @@ def _run_daily_pipeline(config: dict, run_started_at: datetime):
 
     if not new_papers:
         print("\nNo new papers in the current window.")
+        for result in publish_daily_digest([], config, allow_network=not dry_run):
+            if result.detail:
+                log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+            else:
+                log("Publisher", f"{result.target}: {result.status}")
         if dry_run:
             log("DryRun", "Skip empty daily push.")
-        else:
-            push_to_feishu([], config)
     else:
         print("\n[Step 3] Keyword filter")
         candidates = keyword_filter(new_papers, config)
         log("Daily", f"new={len(new_papers)} keyword_candidates={len(candidates)}")
         if not candidates:
             print("No papers passed the keyword filter.")
+            for result in publish_daily_digest([], config, allow_network=not dry_run):
+                if result.detail:
+                    log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+                else:
+                    log("Publisher", f"{result.target}: {result.status}")
             if not dry_run:
                 mark_processed(new_papers)
         else:
@@ -229,10 +265,13 @@ def _run_daily_pipeline(config: dict, run_started_at: datetime):
             log("Daily", f"above_threshold={len(selected)}")
             if not selected:
                 print(f"\nNo papers reached the score threshold (>= {threshold}).")
+                for result in publish_daily_digest([], config, allow_network=not dry_run):
+                    if result.detail:
+                        log("Publisher", f"{result.target}: {result.status} ({result.detail})")
+                    else:
+                        log("Publisher", f"{result.target}: {result.status}")
                 if dry_run:
                     log("DryRun", "Skip empty daily push.")
-                else:
-                    push_to_feishu([], config)
             else:
                 print(
                     f"\n[Step 5] Prepare delivery payload for {len(selected)} selected papers"
@@ -254,6 +293,18 @@ def _run_daily_pipeline(config: dict, run_started_at: datetime):
         log("DryRun", "Skip runtime_state.json update.")
 
 
+def _run_conference_only(config: dict):
+    log("Conference", "Conference-only mode enabled: skipping daily pipeline.")
+    print("\n[Conference] Monitor")
+    return run_conference_monitor(config)
+
+
+def _run_demo_mode(config: dict):
+    log("Demo", "Generating screenshot-ready local demo artifacts.")
+    print("\n[Demo] Generate local artifacts")
+    return generate_demo_artifacts(config)
+
+
 def main():
     args = parse_args()
     start_time = time.time()
@@ -264,9 +315,38 @@ def main():
     print(f"  Paper push runner started at {local_start}")
     print(f"{'=' * 55}\n")
 
+    command = args.command or "daily"
+    if command == "demo":
+        config = {
+            "runtime": {"outputs": ["markdown", "html"]},
+            "local_output": {"output_dir": os.path.join(os.path.dirname(__file__), "output")},
+            "research_profile": {"directions": ["demo showcase"]},
+        }
+        if getattr(args, "output", None):
+            config.setdefault("runtime", {})["outputs"] = args.output
+        summary = _run_demo_mode(config)
+        elapsed = time.time() - start_time
+        print(f"[Demo] Wrote daily={summary['daily_paths']} conference={summary['conference_paths']}")
+        print(f"\n{'=' * 55}")
+        print(f"  Task finished in {elapsed:.0f}s")
+        print(f"{'=' * 55}\n")
+        return
+
     config = load_config()
     if args.dry_run:
         config.setdefault("runtime", {})["dry_run"] = True
+    if getattr(args, "output", None):
+        config.setdefault("runtime", {})["outputs"] = args.output
+    if getattr(args, "profile", None):
+        config = apply_profile(config, args.profile)
+        log("Config", f"Using built-in profile preset `{args.profile}`.")
+    try:
+        warnings = validate_config(config)
+    except ConfigValidationError as exc:
+        print(f"[ConfigError] {exc}")
+        raise SystemExit(2)
+    for warning in warnings:
+        log("Config", warning)
 
     if args.seed_conference_baseline:
         print("[Conference] Seeding conference baseline...")
@@ -288,10 +368,13 @@ def main():
         print(f"{'=' * 55}\n")
         return
 
-    _run_daily_pipeline(config, run_started_at)
+    if command == "conference":
+        summary = _run_conference_only(config)
+    else:
+        _run_daily_pipeline(config, run_started_at)
+        print("\n[Conference] Monitor")
+        summary = run_conference_monitor(config)
 
-    print("\n[Conference] Monitor")
-    summary = run_conference_monitor(config)
     if summary and summary.get("enabled", True):
         log(
             "Conference",
