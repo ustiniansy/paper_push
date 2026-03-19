@@ -100,6 +100,19 @@ def _split_text(text: str, max_len: int = _TEXT_RUN_LIMIT) -> List[str]:
     return chunks
 
 
+def _strip_markdown(text: str) -> str:
+    """Convert markdown-ish LLM output to plain text for Feishu doc blocks."""
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"^\s*>\s?", "", text, flags=re.MULTILINE)
+    return text.strip()
+
+
 def _build_paper_blocks(paper: Dict, idx: int) -> List[dict]:
     """为单篇论文构建 Feishu 文档 Block 列表。"""
     blocks = []
@@ -119,10 +132,10 @@ def _build_paper_blocks(paper: Dict, idx: int) -> List[dict]:
 
     # 评分理由
     if paper.get("score_reason"):
-        blocks.append(_text_block(f"📌 {paper['score_reason']}"))
+        blocks.append(_text_block(f"📌 {_strip_markdown(paper['score_reason'])}"))
 
     # 五段式摘要：按【xxx】切分，每段作为独立 block
-    summary = paper.get("summary_text", "")
+    summary = _strip_markdown(paper.get("summary_text", ""))
     if summary:
         # 按【section】分割，保留分隔符
         parts = re.split(r"(【[^】]+】)", summary)
@@ -175,7 +188,8 @@ def _create_wiki_node(
         raise RuntimeError(f"创建 wiki 节点失败: {data}")
     node = data["data"]["node"]
     obj_token = node["obj_token"]
-    node_url = node.get("url", f"https://bytedance.feishu.cn/wiki/{obj_token}")
+    node_token = node.get("node_token", obj_token)
+    node_url = f"https://feishu.cn/wiki/{node_token}"
     return obj_token, node_url
 
 

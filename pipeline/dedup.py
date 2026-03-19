@@ -22,6 +22,7 @@ def _init_db():
             arxiv_id       TEXT PRIMARY KEY,
             title          TEXT,
             score          REAL    DEFAULT 0,
+            score_reason   TEXT,
             sent           INTEGER DEFAULT 0,   -- 1=已推送
             source         TEXT,
             processed_date TEXT,
@@ -29,6 +30,11 @@ def _init_db():
         )
         """
     )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(seen_papers)")
+    }
+    if "score_reason" not in columns:
+        conn.execute("ALTER TABLE seen_papers ADD COLUMN score_reason TEXT")
     conn.commit()
     conn.close()
 
@@ -60,15 +66,22 @@ def mark_processed(papers: List[Dict]):
     conn = sqlite3.connect(_db_path())
     conn.executemany(
         """
-        INSERT OR IGNORE INTO seen_papers
-            (arxiv_id, title, score, sent, source, processed_date)
-        VALUES (?, ?, ?, 0, ?, ?)
+        INSERT INTO seen_papers
+            (arxiv_id, title, score, score_reason, sent, source, processed_date)
+        VALUES (?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(arxiv_id) DO UPDATE SET
+            title = excluded.title,
+            score = excluded.score,
+            score_reason = excluded.score_reason,
+            source = excluded.source,
+            processed_date = excluded.processed_date
         """,
         [
             (
                 p["arxiv_id"],
                 p.get("title", "")[:500],
                 p.get("score", 0),
+                p.get("score_reason", ""),
                 p.get("source", ""),
                 today,
             )
@@ -88,15 +101,24 @@ def mark_sent(papers: List[Dict]):
     conn = sqlite3.connect(_db_path())
     conn.executemany(
         """
-        INSERT OR REPLACE INTO seen_papers
-            (arxiv_id, title, score, sent, source, processed_date, sent_date)
-        VALUES (?, ?, ?, 1, ?, ?, ?)
+        INSERT INTO seen_papers
+            (arxiv_id, title, score, score_reason, sent, source, processed_date, sent_date)
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT(arxiv_id) DO UPDATE SET
+            title = excluded.title,
+            score = excluded.score,
+            score_reason = excluded.score_reason,
+            sent = 1,
+            source = excluded.source,
+            processed_date = excluded.processed_date,
+            sent_date = excluded.sent_date
         """,
         [
             (
                 p["arxiv_id"],
                 p.get("title", "")[:500],
                 p.get("score", 0),
+                p.get("score_reason", ""),
                 p.get("source", ""),
                 today,
                 today,

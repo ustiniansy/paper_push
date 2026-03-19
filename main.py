@@ -1,23 +1,16 @@
 """
-个性化论文推送系统 · 每日主入口
-
-执行流程：
-  1. 读取 config.yaml（支持环境变量覆盖，适配 GitHub Actions）
-  2. 从 arXiv RSS + HuggingFace Daily Papers 获取今日论文
-  3. 按 arxiv_id 合并去重，过滤数据库中已处理的论文
-  4. 关键词快速过滤（降低 LLM API 成本）
-  5. DeepSeek 批量相关性评分（0-10）
-  6. 过滤低分论文（< score_threshold），无篇数上限
-  7. 逐篇生成五段式中文摘要 + 获取 PapersWithCode 代码链接
-  8. 在飞书知识库创建当日文档（若已配置 App 凭证）
-  9. 推送飞书群消息（总览卡片 + 逐篇详情卡片）
- 10. 将所有已评分论文标记入 SQLite，防止次日重复处理
+Personalized paper push system main entrypoint.
 """
+import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import requests
 import yaml
@@ -27,51 +20,92 @@ from pipeline.keyword_filter import keyword_filter
 from pipeline.llm_scorer import score_papers
 from pipeline.summarizer import summarize_paper
 from publishers.feishu_docs import create_daily_document
-from publishers.feishu_webhook import push_to_feishu
+from publishers.feishu_webhook import (
+    poll_user_reply,
+    push_to_feishu,
+    send_candidate_card,
+    send_confirmation,
+)
 from sources.arxiv_source import fetch_arxiv_papers
 from sources.hf_source import fetch_hf_papers
 
+_PWC_BASE = "https://arxiv.paperswithcode.com/api/v0/papers/"
+_RUNTIME_STATE_PATH = os.path.join(os.path.dirname(__file__), "db", "runtime_state.json")
+_DEFAULT_INITIAL_LOOKBACK_HOURS = 48
+_DEFAULT_OVERLAP_HOURS = 18
 
-# ── 配置加载 ─────────────────────────────────────────────────
 
 def load_config(path: str = "config.yaml") -> dict:
-    """
-    加载配置文件，并用同名环境变量覆盖敏感字段。
-    环境变量命名规则：大写下划线，如 DEEPSEEK_API_KEY、FEISHU_WEBHOOK_URL。
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    with open(path, "r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
 
-    # GitHub Actions Secrets 覆盖
-    _env_overrides = {
-        "DEEPSEEK_API_KEY":        ("llm", "api_key"),
-        "FEISHU_WEBHOOK_URL":       ("feishu", "webhook_url"),
-        "FEISHU_APP_ID":            ("feishu", "app_id"),
-        "FEISHU_APP_SECRET":        ("feishu", "app_secret"),
-        "FEISHU_WIKI_SPACE_ID":     ("feishu", "wiki_space_id"),
-        "FEISHU_WIKI_PARENT_NODE":  ("feishu", "wiki_parent_node"),
+    env_overrides = {
+        "DEEPSEEK_API_KEY": ("llm", "api_key"),
+        "FEISHU_WEBHOOK_URL": ("feishu", "webhook_url"),
+        "FEISHU_APP_ID": ("feishu", "app_id"),
+        "FEISHU_APP_SECRET": ("feishu", "app_secret"),
+        "FEISHU_WIKI_SPACE_ID": ("feishu", "wiki_space_id"),
+        "FEISHU_WIKI_PARENT_NODE": ("feishu", "wiki_parent_node"),
+        "FEISHU_CHAT_ID": ("feishu", "chat_id"),
     }
-    for env_key, (section, field) in _env_overrides.items():
-        val = os.environ.get(env_key)
-        if val:
-            config.setdefault(section, {})[field] = val
+    for env_key, (section, field) in env_overrides.items():
+        value = os.environ.get(env_key)
+        if value:
+            config.setdefault(section, {})[field] = value
 
     return config
 
 
-# ── PapersWithCode 代码链接 ───────────────────────────────────
+def _load_runtime_state() -> dict:
+    if not os.path.exists(_RUNTIME_STATE_PATH):
+        return {}
+    try:
+        with open(_RUNTIME_STATE_PATH, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
 
-_PWC_BASE = "https://arxiv.paperswithcode.com/api/v0/papers/"
+
+def _save_runtime_state(state: dict):
+    os.makedirs(os.path.dirname(_RUNTIME_STATE_PATH), exist_ok=True)
+    with open(_RUNTIME_STATE_PATH, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _compute_fetch_window(config: dict, window_end: datetime) -> tuple[datetime, datetime]:
+    fetch_cfg = config.get("fetch", {})
+    initial_lookback_hours = int(
+        fetch_cfg.get("initial_lookback_hours", _DEFAULT_INITIAL_LOOKBACK_HOURS)
+    )
+    overlap_hours = int(fetch_cfg.get("overlap_hours", _DEFAULT_OVERLAP_HOURS))
+
+    state = _load_runtime_state()
+    last_success = _parse_iso_datetime(state.get("last_success_at", ""))
+    if last_success:
+        window_start = last_success - timedelta(hours=overlap_hours)
+    else:
+        window_start = window_end - timedelta(hours=initial_lookback_hours)
+
+    return window_start, window_end
+
+
+def _mark_successful_run(window_end: datetime):
+    _save_runtime_state({"last_success_at": window_end.astimezone(timezone.utc).isoformat()})
 
 
 def get_code_link(paper_url: str, timeout: int = 10) -> Optional[str]:
-    """查询 PapersWithCode 是否有官方代码仓库。SSL 失败时静默跳过。"""
     arxiv_id = paper_url.rstrip("/").split("/")[-1].split("v")[0]
     try:
         resp = requests.get(
             f"{_PWC_BASE}{arxiv_id}",
             timeout=timeout,
-            verify=False,  # PapersWithCode SSL 握手失败时跳过验证
+            verify=False,
         )
         data = resp.json()
         official = data.get("official")
@@ -82,31 +116,24 @@ def get_code_link(paper_url: str, timeout: int = 10) -> Optional[str]:
     return None
 
 
-# ── 数据合并 ─────────────────────────────────────────────────
-
 def merge_papers(arxiv_papers: List[Dict], hf_papers: List[Dict]) -> List[Dict]:
-    """
-    合并两个来源的论文，以 arxiv_id 为主键去重。
-    - HuggingFace 论文被两个来源同时收录时，保留 upvotes 并标注来源为 'both'
-    - HuggingFace 独有论文直接加入
-    """
-    merged: Dict[str, Dict] = {p["arxiv_id"]: p for p in arxiv_papers}
+    merged: Dict[str, Dict] = {paper["arxiv_id"]: paper for paper in arxiv_papers}
 
-    for hp in hf_papers:
-        aid = hp["arxiv_id"]
-        if aid in merged:
-            # 已有 arXiv 版本，补充 HF 信息
-            merged[aid]["upvotes"] = hp["upvotes"]
-            merged[aid]["source"] = "both"
-            # HF 的 abstract 通常更完整，优先使用
-            if len(hp["abstract"]) > len(merged[aid]["abstract"]):
-                merged[aid]["abstract"] = hp["abstract"]
+    for paper in hf_papers:
+        arxiv_id = paper["arxiv_id"]
+        if arxiv_id in merged:
+            merged[arxiv_id]["upvotes"] = paper["upvotes"]
+            merged[arxiv_id]["source"] = "both"
+            if len(paper["abstract"]) > len(merged[arxiv_id]["abstract"]):
+                merged[arxiv_id]["abstract"] = paper["abstract"]
+            if paper.get("submitted_at"):
+                merged[arxiv_id]["submitted_at"] = paper["submitted_at"]
         else:
-            merged[aid] = hp
+            merged[arxiv_id] = paper
 
     total = len(merged)
-    from_hf_only = sum(1 for p in merged.values() if p["source"] == "huggingface")
-    both = sum(1 for p in merged.values() if p["source"] == "both")
+    from_hf_only = sum(1 for paper in merged.values() if paper["source"] == "huggingface")
+    both = sum(1 for paper in merged.values() if paper["source"] == "both")
     print(
         f"[合并] 共 {total} 篇唯一论文"
         f"（arXiv独有: {total - from_hf_only - both}"
@@ -116,102 +143,149 @@ def merge_papers(arxiv_papers: List[Dict], hf_papers: List[Dict]) -> List[Dict]:
     return list(merged.values())
 
 
-# ── 主流程 ───────────────────────────────────────────────────
-
 def main():
     start_time = time.time()
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"\n{'='*55}")
-    print(f"  论文推送系统启动  {date_str}")
-    print(f"{'='*55}\n")
+    run_started_at = datetime.now(timezone.utc)
+    local_start = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"\n{'=' * 55}")
+    print(f"  论文推送系统启动  {local_start}")
+    print(f"{'=' * 55}\n")
 
-    # ── 1. 加载配置 ──────────────────────────────────────────
     config = load_config()
     net_cfg = config.get("network", {})
     timeout = net_cfg.get("request_timeout", 30)
     threshold = config["llm"]["score_threshold"]
+    window_start, window_end = _compute_fetch_window(config, run_started_at)
+    print(
+        "[窗口] "
+        f"{window_start.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} "
+        f"→ {window_end.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
 
-    # ── 2. 数据采集 ──────────────────────────────────────────
     print("【Step 1】数据采集")
     arxiv_papers = fetch_arxiv_papers(
-        config["arxiv"]["categories"], timeout=timeout
+        config["arxiv"]["categories"],
+        timeout=timeout,
+        since=window_start,
+        until=window_end,
+        raise_on_error=True,
     )
     hf_papers: List[Dict] = []
     if config["huggingface"]["enabled"]:
         hf_papers = fetch_hf_papers(
-            limit=config["huggingface"]["limit"], timeout=timeout
+            limit=config["huggingface"]["limit"],
+            timeout=timeout,
+            since=window_start,
+            until=window_end,
+            raise_on_error=True,
         )
 
-    # ── 3. 合并 & 数据库去重 ─────────────────────────────────
     print("\n【Step 2】合并与去重")
     all_papers = merge_papers(arxiv_papers, hf_papers)
     new_papers = filter_unseen(all_papers)
 
     if not new_papers:
-        print("\n今日暂无新论文（均已在历史记录中），任务结束。")
+        print("\n本次窗口内暂无新论文（或均已处理），任务结束。")
+        _mark_successful_run(window_end)
         return
 
-    # ── 4. 关键词过滤 ────────────────────────────────────────
     print("\n【Step 3】关键词过滤")
     candidates = keyword_filter(new_papers, config)
-
     if not candidates:
         print("关键词过滤后无候选论文，任务结束。")
         mark_processed(new_papers)
+        _mark_successful_run(window_end)
         return
 
-    # ── 5. LLM 批量评分 ──────────────────────────────────────
     print("\n【Step 4】DeepSeek 相关性评分")
     scored = score_papers(candidates, config)
-
-    # 将所有评分过的论文标记为已处理（防明日重复）
     mark_processed(scored)
-    # 关键词过滤掉的论文也标为已处理
-    scored_ids = {p["arxiv_id"] for p in scored}
-    unscored = [p for p in new_papers if p["arxiv_id"] not in scored_ids]
+
+    scored_ids = {paper["arxiv_id"] for paper in scored}
+    unscored = [paper for paper in new_papers if paper["arxiv_id"] not in scored_ids]
     mark_processed(unscored)
 
-    # ── 6. 过滤低分，无篇数上限 ──────────────────────────────
     selected = sorted(
-        [p for p in scored if p["score"] >= threshold],
-        key=lambda x: x["score"],
+        [paper for paper in scored if paper["score"] >= threshold],
+        key=lambda paper: paper["score"],
         reverse=True,
     )
-
     if not selected:
-        print(f"\n今日无论文达到评分阈值（≥ {threshold}），推送空日报。")
+        print(f"\n本次窗口内无论文达到评分阈值（≥ {threshold}），推送空日报。")
         push_to_feishu([], config)
+        _mark_successful_run(window_end)
         return
 
-    print(f"\n【Step 5】精选 {len(selected)} 篇论文，开始生成摘要")
-
-    # ── 7. 逐篇生成摘要 & 获取代码链接 ──────────────────────
-    for i, paper in enumerate(selected, 1):
+    print(f"\n【Step 5】精选 {len(selected)} 篇论文达到阈值（≥ {threshold}），生成摘要...")
+    for index, paper in enumerate(selected, 1):
         title_short = paper["title"][:55] + ("…" if len(paper["title"]) > 55 else "")
-        print(f"  [{i}/{len(selected)}] {title_short}")
-
+        print(f"  [{index}/{len(selected)}] {title_short}")
         paper["code_url"] = get_code_link(paper["url"], timeout=timeout)
         paper["summary_text"] = summarize_paper(paper, config)
-
-        # 摘要间稍作停顿
-        if i < len(selected):
+        if index < len(selected):
             time.sleep(1)
 
-    # ── 8. 飞书知识库文档（Phase 2，按需启用）────────────────
-    print("\n【Step 6】飞书知识库文档")
-    doc_url = create_daily_document(selected, config)
+    print("\n【Step 6】飞书群消息推送 / 交互选择")
+    chat_id = config.get("feishu", {}).get("chat_id", "")
+    if chat_id:
+        msg_id = send_candidate_card(selected, config)
+        if not msg_id:
+            print("[飞书Bot] 候选卡片发送失败，回退为 webhook 总览卡片并默认全选。")
+            push_to_feishu(selected, config)
+            indices = list(range(len(selected)))
+        else:
+            indices = poll_user_reply(config, total=len(selected))
+        chosen = [selected[index] for index in indices]
+        if not chosen:
+            print("用户取消选择，跳过知识库写入。")
+            mark_sent(selected)
+            _mark_successful_run(window_end)
+            return
+        send_confirmation(config, f"✅ 已收到，正在整理 {len(chosen)} 篇论文到知识库...")
+    else:
+        push_to_feishu(selected, config)
+        for index, paper in enumerate(selected, 1):
+            src = "🤗" if paper.get("source") == "huggingface" else "📄"
+            upvotes = f" 👍{paper['upvotes']}" if paper.get("upvotes", 0) > 0 else ""
+            print(f"  {index}. [{paper['score']}分] {src}{upvotes} {paper['title'][:65]}")
+        print("\n输入要保留的序号（如 1,3,5-8 或 all），留空=全部保留：")
+        try:
+            raw = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        if not raw or raw.lower() == "all":
+            chosen = list(selected)
+        else:
+            chosen_indices = set()
+            for part in raw.split(","):
+                part = part.strip()
+                if "-" in part:
+                    low, high = part.split("-", 1)
+                    for number in range(int(low), int(high) + 1):
+                        if 1 <= number <= len(selected):
+                            chosen_indices.add(number - 1)
+                else:
+                    number = int(part)
+                    if 1 <= number <= len(selected):
+                        chosen_indices.add(number - 1)
+            chosen = [selected[index] for index in sorted(chosen_indices)] if chosen_indices else list(selected)
 
-    # ── 9. 飞书群消息推送 ─────────────────────────────────────
-    print("\n【Step 7】飞书群消息推送")
-    push_to_feishu(selected, config, doc_url=doc_url)
+    print(f"\n已选择 {len(chosen)} 篇，写入知识库...")
+    print("\n【Step 7】飞书知识库文档")
+    doc_url = create_daily_document(chosen, config)
 
-    # ── 10. 标记已推送 ───────────────────────────────────────
+    if doc_url:
+        send_confirmation(config, f"改好了，文档已更新：{doc_url}")
+    else:
+        send_confirmation(config, "改好了。")
+
     mark_sent(selected)
+    _mark_successful_run(window_end)
 
     elapsed = time.time() - start_time
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"  ✅ 任务完成！精选 {len(selected)} 篇，耗时 {elapsed:.0f}s")
-    print(f"{'='*55}\n")
+    print(f"{'=' * 55}\n")
 
 
 if __name__ == "__main__":
