@@ -1,98 +1,174 @@
 # 个性化论文推送系统
 
-每日自动从 arXiv + HuggingFace Daily Papers 抓取论文，用 DeepSeek 按研究方向评分筛选，生成中文摘要，推送到飞书群消息并写入飞书知识库。
+每天从 arXiv RSS 和 Hugging Face Daily Papers 抓取论文，按研究方向筛选，用 DeepSeek 评分和生成中文摘要，再推送到飞书群并写入飞书知识库。
 
 ## 功能
 
-- **多源抓取**：arXiv RSS（cs.CV / cs.AI / cs.LG / cs.CL / cs.RO）+ HuggingFace Daily Papers
-- **智能筛选**：关键词预过滤 → DeepSeek 0-10 相关性评分 → 阈值过滤（默认 ≥6）
-- **中文摘要**：五段式结构（要点 / 逻辑 / 技术细节 / 局限性 / 术语解释）
-- **飞书推送**：群消息总览卡片 + 逐篇详情卡片
-- **知识库文档**：在飞书 Wiki 自动创建当日日报文档
-- **去重**：SQLite 记录已处理论文，避免次日重复
+- 多源抓取：`arXiv RSS` + `Hugging Face Daily Papers`
+- 增量调度：记录上次成功运行时间，按时间窗口抓取，避免每天定时运行时漏文
+- 智能筛选：关键词预过滤 + DeepSeek 0-10 相关性评分
+- 中文摘要：五段式结构化总结
+- 飞书交互：群里发送单张总览候选卡片，回复序号后再入知识库
+- 知识库写入：自动创建当日飞书 Wiki / 云文档
+- 去重：SQLite 记录已处理论文，避免重复推送
+- 重推工具：支持从数据库取高分论文重新推送
 
-## 快速开始
+## 运行流程
 
-### 1. 安装依赖
+`main.py` 的主流程：
+
+1. 读取 `config.yaml`
+2. 计算本次抓取时间窗口
+3. 拉取 arXiv / Hugging Face 论文并按时间窗口过滤
+4. 合并、去重、关键词过滤
+5. 调用 DeepSeek 打分
+6. 对达标论文生成摘要和代码链接
+7. 向飞书群发送候选总览卡片
+8. 轮询群内回复，确定入库论文
+9. 写入飞书知识库并发送完成通知
+10. 更新运行状态文件和 SQLite 记录
+
+## 安装
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 配置
+## 配置
+
+复制示例配置：
 
 ```bash
 cp config.yaml.example config.yaml
 ```
 
-编辑 `config.yaml`，填写：
-- `llm.api_key`：[DeepSeek API Key](https://platform.deepseek.com/)
-- `feishu.webhook_url`：飞书群自定义机器人 Webhook URL
+至少需要填写：
 
-### 3. 配置飞书知识库（可选）
+- `llm.api_key`
+- `feishu.webhook_url`
 
-在[飞书开放平台](https://open.feishu.cn/)创建自建应用，开通 `wiki:wiki` 和 `docx:document` 权限，然后运行：
+如果要启用群内交互和知识库写入，还需要填写：
+
+- `feishu.chat_id`
+- `feishu.app_id`
+- `feishu.app_secret`
+- `feishu.wiki_space_id`
+- `feishu.wiki_parent_node`
+
+## 配置说明
+
+### 抓取窗口
+
+`fetch` 配置用于支持每天定时运行时的增量抓取：
+
+```yaml
+fetch:
+  initial_lookback_hours: 48
+  overlap_hours: 18
+```
+
+含义：
+
+- 首次运行或没有状态文件时，默认回看最近 `48` 小时
+- 后续运行会从“上次成功运行时间 - 18小时”开始重叠抓取
+- 再结合 SQLite 按 `arxiv_id` 去重，避免因为时间重叠导致重复推送
+
+运行状态保存在：
+
+```text
+db/runtime_state.json
+```
+
+### Hugging Face 限制
+
+当前 `daily_papers` 接口的 `limit` 最大有效值为 `100`。示例配置已经使用 `100`。
+
+## 飞书知识库初始化
+
+先在飞书开放平台创建自建应用，并开通：
+
+- `wiki:wiki`
+- `docx:document`
+
+然后运行：
 
 ```bash
 py -3 _setup_wiki.py <your_wiki_page_url>
 ```
 
-脚本会自动写入 `wiki_space_id` 和 `wiki_parent_node`。
+它会帮助你填充 `wiki_space_id` 和 `wiki_parent_node`。
 
-### 4. 运行
+## 日常运行
+
+### 主流程
+
+Windows:
 
 ```bash
-# Windows
 run_daily.bat
-
-# Linux / macOS
-PYTHONUTF8=1 python main.py
 ```
 
-## 自动化调度
+或直接运行：
 
-### Windows 任务计划程序
+```bash
+py -3 main.py
+```
 
-将 `run_daily.bat` 添加到任务计划，每天早上 9 点执行。
+### 重推数据库中的高分论文
 
-### GitHub Actions
+例如只取前 3 篇进行重推：
 
-Fork 本仓库后，在 `Settings → Secrets` 中添加以下 Secrets：
+```bash
+py -3 repush.py --limit 3 --poll-timeout 10
+```
 
-| Secret 名称 | 说明 |
-|---|---|
-| `DEEPSEEK_API_KEY` | DeepSeek API Key |
-| `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL |
-| `FEISHU_APP_ID` | 飞书应用 App ID（知识库功能，可选）|
-| `FEISHU_APP_SECRET` | 飞书应用 App Secret（可选）|
-| `FEISHU_WIKI_SPACE_ID` | 知识库空间 ID（可选）|
-| `FEISHU_WIKI_PARENT_NODE` | 父节点 token（可选）|
+参数说明：
 
-默认每周一至周五北京时间 09:00 自动运行，也可在 Actions 页面手动触发。
+- `--limit`：只重推前 N 篇高分论文，`0` 表示不限制
+- `--poll-timeout`：群内回复等待时间，单位分钟
+
+## 定时任务建议
+
+建议每天 `08:00` 启动：
+
+- 论文抓取、评分、摘要生成通常需要一段时间
+- 正常情况下接近 `09:00` 可以完成推送
+
+当前逻辑已经针对这个场景做了补强：
+
+- 不是只看“今天快照”
+- 而是按“上次成功运行时间 + 重叠窗口”抓取
+
+这能显著降低 `3月18日 09:00` 之后到当天深夜新增论文在 `3月19日` 运行时被漏掉的风险。
 
 ## 项目结构
 
-```
+```text
 paper_push/
-├── main.py                    # 主入口
-├── config.yaml.example        # 配置示例
-├── _setup_wiki.py             # 飞书 Wiki 配置向导
-├── run_daily.bat              # Windows 启动脚本
+├── main.py
+├── repush.py
+├── config.yaml.example
+├── _setup_wiki.py
+├── run_daily.bat
 ├── sources/
-│   ├── arxiv_source.py        # arXiv RSS 抓取
-│   └── hf_source.py           # HuggingFace Daily Papers 抓取
+│   ├── arxiv_source.py
+│   └── hf_source.py
 ├── pipeline/
-│   ├── keyword_filter.py      # 关键词预过滤
-│   ├── llm_scorer.py          # DeepSeek 批量评分
-│   ├── summarizer.py          # 中文摘要生成
-│   └── dedup.py               # SQLite 去重
+│   ├── keyword_filter.py
+│   ├── llm_scorer.py
+│   ├── summarizer.py
+│   └── dedup.py
 ├── publishers/
-│   ├── feishu_webhook.py      # 飞书群消息推送
-│   └── feishu_docs.py         # 飞书知识库文档写入
-└── .github/workflows/
-    └── daily_push.yml         # GitHub Actions 定时任务
+│   ├── feishu_webhook.py
+│   └── feishu_docs.py
+└── db/
+    ├── papers.db
+    └── runtime_state.json
 ```
 
-## 自定义研究方向
+## 说明
 
-编辑 `config.yaml` 中的 `research_profile` 部分，修改 `directions`（用于 LLM 评分提示词）和 `keywords`（用于关键词预过滤）。
+- `main.py` 用于日常自动运行
+- `repush.py` 用于从本地数据库中重推已评分论文
+- 飞书群当前采用“单张总览候选卡片 + 群回复选择”的交互方式
+- 写入飞书文档前会清理 Markdown 标记，避免 `**` 之类的格式残留
