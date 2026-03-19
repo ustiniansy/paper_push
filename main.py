@@ -1,6 +1,9 @@
 """
 Personalized paper push system main entrypoint.
 """
+from __future__ import annotations
+
+import argparse
 import json
 import os
 import sys
@@ -12,20 +15,20 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-import requests
 import yaml
 
-from pipeline.dedup import filter_unseen, mark_processed, mark_sent
+from pipeline.conference_monitor import run_conference_monitor, seed_conference_baseline
+from pipeline.dedup import filter_unseen, mark_processed
+from pipeline.http_client import get_retry_session
 from pipeline.keyword_filter import keyword_filter
 from pipeline.llm_scorer import score_papers
-from pipeline.summarizer import summarize_paper
-from publishers.feishu_docs import create_daily_document
-from publishers.feishu_webhook import (
-    poll_user_reply,
-    push_to_feishu,
-    send_candidate_card,
-    send_confirmation,
+from pipeline.publish_flow import (
+    choose_papers_for_delivery,
+    prepare_papers_for_delivery,
+    write_selected_papers,
 )
+from pipeline.runtime_utils import is_dry_run, log
+from publishers.feishu_webhook import push_to_feishu
 from sources.arxiv_source import fetch_arxiv_papers
 from sources.hf_source import fetch_hf_papers
 
@@ -33,6 +36,21 @@ _PWC_BASE = "https://arxiv.paperswithcode.com/api/v0/papers/"
 _RUNTIME_STATE_PATH = os.path.join(os.path.dirname(__file__), "db", "runtime_state.json")
 _DEFAULT_INITIAL_LOOKBACK_HOURS = 48
 _DEFAULT_OVERLAP_HOURS = 18
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run the daily paper push pipeline.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the pipeline without Feishu pushes, docs writes, or state updates.",
+    )
+    parser.add_argument(
+        "--seed-conference-baseline",
+        action="store_true",
+        help="Only fetch current conference papers and write them into the local DB baseline.",
+    )
+    return parser.parse_args()
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -102,12 +120,12 @@ def _mark_successful_run(window_end: datetime):
 def get_code_link(paper_url: str, timeout: int = 10) -> Optional[str]:
     arxiv_id = paper_url.rstrip("/").split("/")[-1].split("v")[0]
     try:
-        resp = requests.get(
+        response = get_retry_session().get(
             f"{_PWC_BASE}{arxiv_id}",
             timeout=timeout,
             verify=False,
         )
-        data = resp.json()
+        data = response.json()
         official = data.get("official")
         if official and official.get("url"):
             return official["url"]
@@ -135,34 +153,28 @@ def merge_papers(arxiv_papers: List[Dict], hf_papers: List[Dict]) -> List[Dict]:
     from_hf_only = sum(1 for paper in merged.values() if paper["source"] == "huggingface")
     both = sum(1 for paper in merged.values() if paper["source"] == "both")
     print(
-        f"[合并] 共 {total} 篇唯一论文"
-        f"（arXiv独有: {total - from_hf_only - both}"
-        f" | HF独有: {from_hf_only}"
-        f" | 两源均收录: {both}）"
+        f"[Merge] total={total} "
+        f"arxiv_only={total - from_hf_only - both} "
+        f"hf_only={from_hf_only} both={both}"
     )
     return list(merged.values())
 
 
-def main():
-    start_time = time.time()
-    run_started_at = datetime.now(timezone.utc)
-    local_start = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"\n{'=' * 55}")
-    print(f"  论文推送系统启动  {local_start}")
-    print(f"{'=' * 55}\n")
-
-    config = load_config()
-    net_cfg = config.get("network", {})
-    timeout = net_cfg.get("request_timeout", 30)
+def _run_daily_pipeline(config: dict, run_started_at: datetime):
+    timeout = config.get("network", {}).get("request_timeout", 30)
     threshold = config["llm"]["score_threshold"]
+    dry_run = is_dry_run(config)
     window_start, window_end = _compute_fetch_window(config, run_started_at)
-    print(
-        "[窗口] "
-        f"{window_start.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} "
-        f"→ {window_end.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-    )
 
-    print("【Step 1】数据采集")
+    print(
+        "[Window] "
+        f"{window_start.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} -> "
+        f"{window_end.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    if dry_run:
+        log("DryRun", "Enabled: no Feishu push, no document writes, no local state updates.")
+
+    print("[Step 1] Collect papers")
     arxiv_papers = fetch_arxiv_papers(
         config["arxiv"]["categories"],
         timeout=timeout,
@@ -180,111 +192,117 @@ def main():
             raise_on_error=True,
         )
 
-    print("\n【Step 2】合并与去重")
+    print("\n[Step 2] Merge and dedup")
     all_papers = merge_papers(arxiv_papers, hf_papers)
     new_papers = filter_unseen(all_papers)
 
     if not new_papers:
-        print("\n本次窗口内暂无新论文（或均已处理），任务结束。")
-        _mark_successful_run(window_end)
-        return
-
-    print("\n【Step 3】关键词过滤")
-    candidates = keyword_filter(new_papers, config)
-    if not candidates:
-        print("关键词过滤后无候选论文，任务结束。")
-        mark_processed(new_papers)
-        _mark_successful_run(window_end)
-        return
-
-    print("\n【Step 4】DeepSeek 相关性评分")
-    scored = score_papers(candidates, config)
-    mark_processed(scored)
-
-    scored_ids = {paper["arxiv_id"] for paper in scored}
-    unscored = [paper for paper in new_papers if paper["arxiv_id"] not in scored_ids]
-    mark_processed(unscored)
-
-    selected = sorted(
-        [paper for paper in scored if paper["score"] >= threshold],
-        key=lambda paper: paper["score"],
-        reverse=True,
-    )
-    if not selected:
-        print(f"\n本次窗口内无论文达到评分阈值（≥ {threshold}），推送空日报。")
-        push_to_feishu([], config)
-        _mark_successful_run(window_end)
-        return
-
-    print(f"\n【Step 5】精选 {len(selected)} 篇论文达到阈值（≥ {threshold}），生成摘要...")
-    for index, paper in enumerate(selected, 1):
-        title_short = paper["title"][:55] + ("…" if len(paper["title"]) > 55 else "")
-        print(f"  [{index}/{len(selected)}] {title_short}")
-        paper["code_url"] = get_code_link(paper["url"], timeout=timeout)
-        paper["summary_text"] = summarize_paper(paper, config)
-        if index < len(selected):
-            time.sleep(1)
-
-    print("\n【Step 6】飞书群消息推送 / 交互选择")
-    chat_id = config.get("feishu", {}).get("chat_id", "")
-    if chat_id:
-        msg_id = send_candidate_card(selected, config)
-        if not msg_id:
-            print("[飞书Bot] 候选卡片发送失败，回退为 webhook 总览卡片并默认全选。")
-            push_to_feishu(selected, config)
-            indices = list(range(len(selected)))
+        print("\nNo new papers in the current window.")
+        if dry_run:
+            log("DryRun", "Skip empty daily push.")
         else:
-            indices = poll_user_reply(config, total=len(selected))
-        chosen = [selected[index] for index in indices]
-        if not chosen:
-            print("用户取消选择，跳过知识库写入。")
-            mark_sent(selected)
-            _mark_successful_run(window_end)
-            return
-        send_confirmation(config, f"✅ 已收到，正在整理 {len(chosen)} 篇论文到知识库...")
+            push_to_feishu([], config)
     else:
-        push_to_feishu(selected, config)
-        for index, paper in enumerate(selected, 1):
-            src = "🤗" if paper.get("source") == "huggingface" else "📄"
-            upvotes = f" 👍{paper['upvotes']}" if paper.get("upvotes", 0) > 0 else ""
-            print(f"  {index}. [{paper['score']}分] {src}{upvotes} {paper['title'][:65]}")
-        print("\n输入要保留的序号（如 1,3,5-8 或 all），留空=全部保留：")
-        try:
-            raw = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raw = ""
-        if not raw or raw.lower() == "all":
-            chosen = list(selected)
+        print("\n[Step 3] Keyword filter")
+        candidates = keyword_filter(new_papers, config)
+        log("Daily", f"new={len(new_papers)} keyword_candidates={len(candidates)}")
+        if not candidates:
+            print("No papers passed the keyword filter.")
+            if not dry_run:
+                mark_processed(new_papers)
         else:
-            chosen_indices = set()
-            for part in raw.split(","):
-                part = part.strip()
-                if "-" in part:
-                    low, high = part.split("-", 1)
-                    for number in range(int(low), int(high) + 1):
-                        if 1 <= number <= len(selected):
-                            chosen_indices.add(number - 1)
+            print("\n[Step 4] LLM scoring")
+            scored = score_papers(candidates, config, progress_label="daily-llm-score")
+            if not dry_run:
+                mark_processed(scored)
+
+            scored_ids = {paper["arxiv_id"] for paper in scored}
+            unscored = [paper for paper in new_papers if paper["arxiv_id"] not in scored_ids]
+            if not dry_run:
+                mark_processed(unscored)
+
+            selected = sorted(
+                [paper for paper in scored if paper["score"] >= threshold],
+                key=lambda paper: paper["score"],
+                reverse=True,
+            )
+            log("Daily", f"above_threshold={len(selected)}")
+            if not selected:
+                print(f"\nNo papers reached the score threshold (>= {threshold}).")
+                if dry_run:
+                    log("DryRun", "Skip empty daily push.")
                 else:
-                    number = int(part)
-                    if 1 <= number <= len(selected):
-                        chosen_indices.add(number - 1)
-            chosen = [selected[index] for index in sorted(chosen_indices)] if chosen_indices else list(selected)
+                    push_to_feishu([], config)
+            else:
+                print(
+                    f"\n[Step 5] Prepare delivery payload for {len(selected)} selected papers"
+                )
+                prepare_papers_for_delivery(
+                    selected,
+                    config,
+                    timeout=timeout,
+                    code_link_getter=get_code_link,
+                )
 
-    print(f"\n已选择 {len(chosen)} 篇，写入知识库...")
-    print("\n【Step 7】飞书知识库文档")
-    doc_url = create_daily_document(chosen, config)
+                print("\n[Step 6] Feishu selection")
+                chosen = choose_papers_for_delivery(selected, config)
+                write_selected_papers(chosen, config)
 
-    if doc_url:
-        send_confirmation(config, f"改好了，文档已更新：{doc_url}")
+    if not dry_run:
+        _mark_successful_run(window_end)
     else:
-        send_confirmation(config, "改好了。")
+        log("DryRun", "Skip runtime_state.json update.")
 
-    mark_sent(selected)
-    _mark_successful_run(window_end)
+
+def main():
+    args = parse_args()
+    start_time = time.time()
+    run_started_at = datetime.now(timezone.utc)
+    local_start = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    print(f"\n{'=' * 55}")
+    print(f"  Paper push runner started at {local_start}")
+    print(f"{'=' * 55}\n")
+
+    config = load_config()
+    if args.dry_run:
+        config.setdefault("runtime", {})["dry_run"] = True
+
+    if args.seed_conference_baseline:
+        print("[Conference] Seeding conference baseline...")
+        summary = seed_conference_baseline(config)
+        if not summary.get("enabled", True):
+            print("[Conference] Conference monitor is disabled.")
+            return
+        print(
+            "[Conference] Baseline seeded: "
+            f"seeded={summary.get('seeded_total', 0)} "
+            f"venues={len(summary.get('venue_counts', {}))} "
+            f"errors={len(summary.get('errors', []))}"
+        )
+        if summary.get("errors"):
+            print(f"[Conference] Errors: {summary['errors']}")
+        elapsed = time.time() - start_time
+        print(f"\n{'=' * 55}")
+        print(f"  Finished in {elapsed:.0f}s")
+        print(f"{'=' * 55}\n")
+        return
+
+    _run_daily_pipeline(config, run_started_at)
+
+    print("\n[Conference] Monitor")
+    summary = run_conference_monitor(config)
+    if summary and summary.get("enabled", True):
+        log(
+            "Conference",
+            f"detected={summary.get('detected_total', 0)} "
+            f"relevant={summary.get('relevant_total', 0)} "
+            f"errors={len(summary.get('errors', []))}",
+        )
 
     elapsed = time.time() - start_time
     print(f"\n{'=' * 55}")
-    print(f"  ✅ 任务完成！精选 {len(selected)} 篇，耗时 {elapsed:.0f}s")
+    print(f"  Task finished in {elapsed:.0f}s")
     print(f"{'=' * 55}\n")
 
 

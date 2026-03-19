@@ -3,7 +3,7 @@
 """
 from typing import Dict
 
-import requests
+from pipeline.http_client import get_default_session
 
 
 def _call_api(prompt: str, llm_config: dict) -> str:
@@ -25,7 +25,7 @@ def _call_api(prompt: str, llm_config: dict) -> str:
         ],
         "stream": False,
     }
-    resp = requests.post(
+    resp = get_default_session().post(
         llm_config["api_url"],
         headers=headers,
         json=payload,

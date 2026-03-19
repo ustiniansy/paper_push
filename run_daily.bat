@@ -8,11 +8,11 @@ echo.
 
 cd /d "%~dp0"
 set PYTHONUTF8=1
-py -3 main.py
+py -3 -u main.py %*
 
 if %ERRORLEVEL% equ 0 (
     echo.
-    echo [成功] 论文抓取分析已完成，已推送到飞书。
+    echo [成功] 论文抓取分析已完成。
 ) else (
     echo.
     echo [错误] 运行出错，请检查日志输出。

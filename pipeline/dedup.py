@@ -1,10 +1,12 @@
 """
-去重模块：基于 SQLite 记录已处理/已推送的论文，避免重复评分和推送。
+SQLite-backed deduplication for processed and sent papers.
 """
 import os
 import sqlite3
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, Iterable, List
+
+_SQLITE_IN_MAX = 900
 
 
 def _db_path() -> str:
@@ -23,30 +25,48 @@ def _init_db():
             title          TEXT,
             score          REAL    DEFAULT 0,
             score_reason   TEXT,
-            sent           INTEGER DEFAULT 0,   -- 1=已推送
+            sent           INTEGER DEFAULT 0,
             source         TEXT,
             processed_date TEXT,
             sent_date      TEXT
         )
         """
     )
-    columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(seen_papers)")
-    }
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(seen_papers)")}
     if "score_reason" not in columns:
         conn.execute("ALTER TABLE seen_papers ADD COLUMN score_reason TEXT")
     conn.commit()
     conn.close()
 
 
+def _chunked(items: List[str], size: int) -> Iterable[List[str]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+def _fetch_seen_ids(conn: sqlite3.Connection, ids: List[str]) -> set[str]:
+    if not ids:
+        return set()
+
+    seen: set[str] = set()
+    for chunk in _chunked(ids, _SQLITE_IN_MAX):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT arxiv_id FROM seen_papers WHERE arxiv_id IN ({placeholders})",
+            chunk,
+        )
+        seen.update(row[0] for row in rows)
+    return seen
+
+
 def filter_unseen(papers: List[Dict]) -> List[Dict]:
-    """过滤掉数据库中已有记录的论文，返回全新的论文列表。"""
+    """Return only papers whose ids are not already recorded in SQLite."""
     _init_db()
     conn = sqlite3.connect(_db_path())
-    seen = {row[0] for row in conn.execute("SELECT arxiv_id FROM seen_papers")}
+    seen = _fetch_seen_ids(conn, [paper["arxiv_id"] for paper in papers])
     conn.close()
 
-    new = [p for p in papers if p["arxiv_id"] not in seen]
+    new = [paper for paper in papers if paper["arxiv_id"] not in seen]
     print(
         f"[去重] {len(papers)} 篇 → {len(new)} 篇新论文"
         f"（过滤 {len(papers) - len(new)} 篇已处理过）"
@@ -55,12 +75,10 @@ def filter_unseen(papers: List[Dict]) -> List[Dict]:
 
 
 def mark_processed(papers: List[Dict]):
-    """
-    将论文标记为"已处理"（参与过评分），防止明天重复评分。
-    不影响 sent 状态。
-    """
+    """Mark papers as processed so they will not be rescored next run."""
     if not papers:
         return
+
     _init_db()
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(_db_path())
@@ -78,14 +96,14 @@ def mark_processed(papers: List[Dict]):
         """,
         [
             (
-                p["arxiv_id"],
-                p.get("title", "")[:500],
-                p.get("score", 0),
-                p.get("score_reason", ""),
-                p.get("source", ""),
+                paper["arxiv_id"],
+                paper.get("title", "")[:500],
+                paper.get("score", 0),
+                paper.get("score_reason", ""),
+                paper.get("source", ""),
                 today,
             )
-            for p in papers
+            for paper in papers
         ],
     )
     conn.commit()
@@ -93,9 +111,10 @@ def mark_processed(papers: List[Dict]):
 
 
 def mark_sent(papers: List[Dict]):
-    """将论文标记为"已推送"，更新评分和推送日期。"""
+    """Mark papers as sent and update their score metadata."""
     if not papers:
         return
+
     _init_db()
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(_db_path())
@@ -115,15 +134,15 @@ def mark_sent(papers: List[Dict]):
         """,
         [
             (
-                p["arxiv_id"],
-                p.get("title", "")[:500],
-                p.get("score", 0),
-                p.get("score_reason", ""),
-                p.get("source", ""),
+                paper["arxiv_id"],
+                paper.get("title", "")[:500],
+                paper.get("score", 0),
+                paper.get("score_reason", ""),
+                paper.get("source", ""),
                 today,
                 today,
             )
-            for p in papers
+            for paper in papers
         ],
     )
     conn.commit()

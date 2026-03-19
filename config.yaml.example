@@ -87,3 +87,23 @@ network:
 fetch:
   initial_lookback_hours: 48
   overlap_hours: 18
+
+runtime:
+  dry_run: false
+
+conference_monitor:
+  enabled: true
+  timeout_per_source: 8
+  max_workers: 6
+  venues:
+    - CVPR
+    - ICCV
+    - WACV
+    # - ICLR
+    - ICML
+    # - NeurIPS
+    - ACL
+    - NAACL
+    - EMNLP
+    - AAAI
+    - ACMMM

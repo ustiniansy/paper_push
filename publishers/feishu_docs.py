@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import requests
+from pipeline.http_client import get_default_session
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
@@ -37,7 +37,7 @@ _TEXT_RUN_LIMIT = 2000
 
 def _get_token(config: dict) -> str:
     """获取 tenant_access_token。"""
-    resp = requests.post(
+    resp = get_default_session().post(
         f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal",
         json={
             "app_id": config["feishu"]["app_id"],
@@ -171,7 +171,7 @@ def _create_wiki_node(
     在知识库中创建新文档节点。
     返回 (obj_token, node_url)
     """
-    resp = requests.post(
+    resp = get_default_session().post(
         f"{FEISHU_BASE}/wiki/v2/spaces/{space_id}/nodes",
         headers=_headers(token),
         json={
@@ -197,7 +197,7 @@ def _get_root_block_id(token: str, doc_token: str) -> str:
     """获取文档根块 ID。"""
     # 新建文档后偶有延迟，最多重试 3 次
     for attempt in range(3):
-        resp = requests.get(
+        resp = get_default_session().get(
             f"{FEISHU_BASE}/docx/v1/documents/{doc_token}/blocks",
             headers=_headers(token),
             timeout=15,
@@ -216,7 +216,7 @@ def _append_blocks(
     """分批追加 blocks 到文档根块。"""
     for i in range(0, len(blocks), _BLOCK_BATCH):
         batch = blocks[i : i + _BLOCK_BATCH]
-        resp = requests.post(
+        resp = get_default_session().post(
             f"{FEISHU_BASE}/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children",
             headers=_headers(token),
             json={"children": batch},
@@ -229,7 +229,12 @@ def _append_blocks(
 
 # ── 公开接口 ─────────────────────────────────────────────────
 
-def create_daily_document(papers: List[Dict], config: dict) -> Optional[str]:
+def create_daily_document(
+    papers: List[Dict],
+    config: dict,
+    title_suffix: str = "论文日报",
+    source_label: str = "arXiv + HuggingFace Daily Papers",
+) -> Optional[str]:
     """
     在飞书知识库中创建当日论文日报文档。
 
@@ -252,7 +257,7 @@ def create_daily_document(papers: List[Dict], config: dict) -> Optional[str]:
     try:
         token = _get_token(config)
         date_str = datetime.now().strftime("%Y-%m-%d")
-        title = f"📚 {date_str} 论文日报（{len(papers)}篇）"
+        title = f"📚 {date_str} {title_suffix}（{len(papers)}篇）"
 
         # 1. 创建 wiki 节点
         doc_token, doc_url = _create_wiki_node(
@@ -270,7 +275,7 @@ def create_daily_document(papers: List[Dict], config: dict) -> Optional[str]:
         # 文档头部信息
         all_blocks.append(
             _text_block(
-                f"📅 {date_str}  |  来源：arXiv + HuggingFace Daily Papers"
+                f"📅 {date_str}  |  来源：{source_label}"
                 f"  |  共入选 {len(papers)} 篇（评分 ≥ {config['llm']['score_threshold']}）"
             )
         )

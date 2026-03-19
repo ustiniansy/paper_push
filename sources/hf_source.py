@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 
 import requests
 
+from pipeline.http_client import get_retry_session
+
 HF_API_URL = "https://huggingface.co/api/daily_papers"
 HF_MAX_LIMIT = 100
 
@@ -34,11 +36,10 @@ def fetch_hf_papers(
         limit = HF_MAX_LIMIT
 
     try:
-        resp = requests.get(
+        resp = get_retry_session().get(
             HF_API_URL,
             params={"limit": limit},
             timeout=timeout,
-            headers={"User-Agent": "paper-push-bot/1.0"},
         )
         resp.raise_for_status()
         items = resp.json()

@@ -7,7 +7,8 @@ import re
 import time
 from typing import Dict, List
 
-import requests
+from pipeline.http_client import get_default_session
+from pipeline.runtime_utils import ProgressBar
 
 
 def _extract_json_array(text: str) -> list:
@@ -46,7 +47,7 @@ def _call_api(prompt: str, llm_config: dict) -> str:
         "temperature": 0.1,
         "stream": False,
     }
-    resp = requests.post(
+    resp = get_default_session().post(
         llm_config["api_url"],
         headers=headers,
         json=payload,
@@ -103,7 +104,11 @@ def _score_batch(batch: List[Dict], directions: List[str], llm_config: dict) -> 
     return batch
 
 
-def score_papers(papers: List[Dict], config: dict) -> List[Dict]:
+def score_papers(
+    papers: List[Dict],
+    config: dict,
+    progress_label: str = "llm-score",
+) -> List[Dict]:
     """
     批量评分入口。对所有候选论文调用 DeepSeek 评分，返回附带 score 字段的列表。
 
@@ -123,6 +128,7 @@ def score_papers(papers: List[Dict], config: dict) -> List[Dict]:
     threshold = llm_config.get("score_threshold", 6)
 
     print(f"[LLM评分] 共 {len(papers)} 篇，每批 {batch_size}，开始评分...")
+    progress = ProgressBar(progress_label, len(papers))
 
     scored: List[Dict] = []
     total_batches = (len(papers) + batch_size - 1) // batch_size
@@ -132,12 +138,15 @@ def score_papers(papers: List[Dict], config: dict) -> List[Dict]:
         batch_no = i // batch_size + 1
         print(f"  批次 {batch_no}/{total_batches}（{len(batch)} 篇）...")
 
-        scored.extend(_score_batch(batch, directions, llm_config))
+        scored_batch = _score_batch(batch, directions, llm_config)
+        scored.extend(scored_batch)
+        progress.advance(len(scored_batch), detail=f"batch {batch_no}/{total_batches}")
 
         # 批次间稍作停顿，避免触发限速
         if batch_no < total_batches:
             time.sleep(0.5)
 
     above = sum(1 for p in scored if p["score"] >= threshold)
+    progress.finish(detail=f"above-threshold={above}")
     print(f"[LLM评分] 完成。{above}/{len(scored)} 篇评分 ≥ {threshold}，将进入摘要阶段")
     return scored

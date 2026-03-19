@@ -13,15 +13,14 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import requests
-
 from publishers.feishu_docs import _get_token, FEISHU_BASE
+from pipeline.http_client import get_default_session
 
 # 飞书卡片 markdown 单元素内容上限（保守取值）
 _CARD_CONTENT_LIMIT = 28000
 
 def _post(webhook_url: str, payload: dict, timeout: int = 15):
-    resp = requests.post(
+    resp = get_default_session().post(
         webhook_url,
         headers={"Content-Type": "application/json; charset=utf-8"},
         json=payload,
@@ -38,7 +37,7 @@ def _post_app_message(
     content: dict,
     timeout: int = 15,
 ) -> bool:
-    resp = requests.post(
+    resp = get_default_session().post(
         f"{FEISHU_BASE}/im/v1/messages?receive_id_type=chat_id",
         headers={
             "Authorization": f"Bearer {token}",
@@ -165,6 +164,43 @@ def push_to_feishu(
     print(f"[飞书Webhook] 总览卡片推送完成")
 
 
+def push_conference_status(summary: dict, config: dict):
+    """Push one daily conference-monitor status card."""
+    webhook_url = config["feishu"]["webhook_url"]
+    timeout = config.get("network", {}).get("request_timeout", 15)
+
+    if not webhook_url or "YOUR_" in webhook_url:
+        print("[飞书Webhook] 未配置 webhook_url，跳过会议状态推送")
+        return
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    lines = [summary.get("message", "今日会议状态已检查。")]
+
+    venue_counts = summary.get("venue_counts", {})
+    if venue_counts:
+        lines.append("\n**检测到新增论文的会议：**")
+        for venue, count in sorted(venue_counts.items()):
+            relevant = summary.get("relevant_by_venue", {}).get(venue, 0)
+            lines.append(f"- {venue}: 新增 {count} 篇，相关 {relevant} 篇")
+
+    not_released = summary.get("not_released", [])
+    if not_released:
+        lines.append("\n**当前年份窗口内暂未发布：**")
+        for venue in sorted(not_released):
+            lines.append(f"- {venue}")
+
+    if summary.get("doc_url"):
+        lines.append(f"\n📖 **整理文档：** [打开飞书文档]({summary['doc_url']})")
+
+    payload = _make_card(
+        f"🏛️ {date_str} 会议论文监控",
+        "\n".join(lines),
+        color="carmine",
+    )
+    _post(webhook_url, payload, timeout)
+    print("[飞书Webhook] 会议状态卡片推送完成")
+
+
 # ── App Bot 交互式选择 ─────────────────────────────────────────
 
 def _parse_indices(text: str, total: int) -> Optional[List[int]]:
@@ -256,7 +292,7 @@ def send_candidate_card(papers: List[Dict], config: dict) -> Optional[str]:
     }
 
     try:
-        resp = requests.post(
+        resp = get_default_session().post(
             f"{FEISHU_BASE}/im/v1/messages?receive_id_type=chat_id",
             headers={
                 "Authorization": f"Bearer {token}",
@@ -295,7 +331,7 @@ def poll_user_reply(
     # 获取 bot 自身的 open_id，用于过滤 bot 自己的消息
     bot_id = None
     try:
-        resp = requests.get(
+        resp = get_default_session().get(
             f"{FEISHU_BASE}/bot/v3/info",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
@@ -311,7 +347,7 @@ def poll_user_reply(
     while time.time() < deadline:
         time.sleep(poll_interval)
         try:
-            resp = requests.get(
+            resp = get_default_session().get(
                 f"{FEISHU_BASE}/im/v1/messages",
                 headers={"Authorization": f"Bearer {token}"},
                 params={
