@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-push"
+version = "0.1.0"
+description = "A paper-intelligence pipeline for daily paper digests and conference monitoring."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "paper_push contributors" }
+]
+keywords = [
+  "arxiv",
+  "papers",
+  "research",
+  "conference-monitoring",
+  "literature-review"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Information Analysis"
+]
+dependencies = [
+  "feedparser>=6.0.0",
+  "requests>=2.28.0",
+  "pyyaml>=6.0.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/ustiniansy/paper_push"
+Issues = "https://github.com/ustiniansy/paper_push/issues"
+Repository = "https://github.com/ustiniansy/paper_push"
+
+[project.scripts]
+paper-push = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "repush"]
+
+[tool.setuptools.packages.find]
+include = ["pipeline*", "publishers*", "sources*"]
+

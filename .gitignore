@@ -1,8 +1,13 @@
 # 配置文件（含敏感信息）
 config.yaml
+.env
+.env.*
+!.env.example
 
 # 数据库
 db/
+*.sqlite
+*.sqlite3
 
 # Python
 __pycache__/
@@ -11,6 +16,12 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 
 # 日志
 *.log

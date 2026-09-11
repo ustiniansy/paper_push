@@ -64,6 +64,35 @@ copy config.yaml.example config.yaml
 - `nlp`
 - `agents`
 
+## 安装
+
+源码安装推荐使用可编辑模式：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+安装后可以继续用源码入口：
+
+```powershell
+.\.venv\Scripts\python.exe main.py demo
+```
+
+也可以使用命令行脚本：
+
+```powershell
+.\.venv\Scripts\paper-push.exe demo
+```
+
+macOS 或 Linux 可使用：
+
+```bash
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e .
+./.venv/bin/paper-push demo
+```
+
 ## 命令行
 
 `main.py` 现在支持子命令：
@@ -166,8 +195,29 @@ copy config.yaml.example config.yaml
 - `conference_demo.html`
 - `index.html`
 
+## 开发
+
+发布改动前建议运行完整测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+GitHub Actions 会在 Windows + Python 3.12 上运行同一套测试。
+
 ## 安全
 
 - 不要把真实密钥提交到 `config.yaml`
 - `config.yaml` 已经被 Git 忽略
+- `.env`、`db/`、`output/`、虚拟环境和构建产物也已被忽略
 - 分享截图或产物前，先确认日志和示例配置里没有真实敏感信息
+- 漏洞反馈和密钥处理说明见 [SECURITY.md](SECURITY.md)
+
+## 发布前检查
+
+公开仓库前建议确认：
+
+- 完整测试已通过
+- `config.yaml`、`.env`、`db/`、`output/` 没有被 Git 跟踪
+- 没有误提交 token、webhook URL、私有 chat ID
+- 面向用户的行为变化已写入 `CHANGELOG.md`

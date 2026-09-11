@@ -64,6 +64,35 @@ Available presets:
 - `nlp`
 - `agents`
 
+## Installation
+
+For normal source installs:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+After installation, you can use either the module entrypoint:
+
+```powershell
+.\.venv\Scripts\python.exe main.py demo
+```
+
+or the console script:
+
+```powershell
+.\.venv\Scripts\paper-push.exe demo
+```
+
+On macOS or Linux, replace the virtual-environment commands with:
+
+```bash
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e .
+./.venv/bin/paper-push demo
+```
+
 ## Commands
 
 `main.py` now supports subcommands:
@@ -162,8 +191,29 @@ The local writer produces both archive files and stable `latest` files:
 - `conference_latest.html`
 - `index.html`
 
+## Development
+
+Run the test suite before publishing changes:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+The GitHub Actions workflow runs the same test suite on Windows with Python 3.12.
+
 ## Security
 
 - Do not commit real secrets in `config.yaml`
 - `config.yaml` is already ignored by Git
+- `.env`, `db/`, `output/`, virtual environments, and build artifacts are ignored
 - Double-check logs and sample configs before sharing screenshots or publishing outputs
+- See [SECURITY.md](SECURITY.md) for vulnerability reporting and secret-handling notes
+
+## Release Checklist
+
+Before making the repository public:
+
+- Run the full test suite
+- Confirm `config.yaml`, `.env`, `db/`, and `output/` are not tracked
+- Search for accidental tokens, webhook URLs, and private chat IDs
+- Update `CHANGELOG.md` when user-facing behavior changes
