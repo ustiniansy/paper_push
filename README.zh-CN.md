@@ -204,20 +204,3 @@ copy config.yaml.example config.yaml
 ```
 
 GitHub Actions 会在 Windows + Python 3.12 上运行同一套测试。
-
-## 安全
-
-- 不要把真实密钥提交到 `config.yaml`
-- `config.yaml` 已经被 Git 忽略
-- `.env`、`db/`、`output/`、虚拟环境和构建产物也已被忽略
-- 分享截图或产物前，先确认日志和示例配置里没有真实敏感信息
-- 漏洞反馈和密钥处理说明见 [SECURITY.md](SECURITY.md)
-
-## 发布前检查
-
-公开仓库前建议确认：
-
-- 完整测试已通过
-- `config.yaml`、`.env`、`db/`、`output/` 没有被 Git 跟踪
-- 没有误提交 token、webhook URL、私有 chat ID
-- 面向用户的行为变化已写入 `CHANGELOG.md`

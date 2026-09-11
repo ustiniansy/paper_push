@@ -200,20 +200,3 @@ Run the test suite before publishing changes:
 ```
 
 The GitHub Actions workflow runs the same test suite on Windows with Python 3.12.
-
-## Security
-
-- Do not commit real secrets in `config.yaml`
-- `config.yaml` is already ignored by Git
-- `.env`, `db/`, `output/`, virtual environments, and build artifacts are ignored
-- Double-check logs and sample configs before sharing screenshots or publishing outputs
-- See [SECURITY.md](SECURITY.md) for vulnerability reporting and secret-handling notes
-
-## Release Checklist
-
-Before making the repository public:
-
-- Run the full test suite
-- Confirm `config.yaml`, `.env`, `db/`, and `output/` are not tracked
-- Search for accidental tokens, webhook URLs, and private chat IDs
-- Update `CHANGELOG.md` when user-facing behavior changes
