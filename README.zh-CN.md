@@ -24,6 +24,53 @@
 
 ![会议监控示例](docs/assets/paper-push-conference-demo.png)
 
+## 推送效果
+
+`paper_push` 会生成两类研究更新：
+
+| 类型 | 读者会看到什么 |
+| --- | --- |
+| 论文日报 | 论文排序、来源、相关性分数、评分理由、中文总结、论文链接，以及可用时的代码链接 |
+| 会议雷达 | 新检测到的会议论文、各会议相关论文数量、尚未发布的会议，以及稳定的本地报告链接 |
+
+当前支持的推送目标：
+
+| 目标 | 效果 |
+| --- | --- |
+| `html` | 适合浏览器打开的报告，以及 `output/index.html` 入口页 |
+| `markdown` | 可分享的 `.md` 归档文件和稳定的 `latest` 文件 |
+| `feishu` | 群通知卡片、可选的交互选文，以及可选的知识库文档写入 |
+| `telegram` | 把日报和会议状态发送到 Telegram 聊天 |
+| `slack` | 通过 Slack webhook 发送日报和会议状态 |
+
+## 常用流程
+
+不配置任何凭证，先预览产品效果：
+
+```powershell
+.\.venv\Scripts\python.exe main.py demo
+```
+
+抓取真实论文，但只生成本地 HTML/Markdown 报告：
+
+```powershell
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --dry-run --output markdown --output html
+```
+
+把论文日报推送到聊天平台，同时保留本地 HTML 备份：
+
+```powershell
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output feishu --output html
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output telegram --output html
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output slack --output html
+```
+
+只运行会议雷达：
+
+```powershell
+.\.venv\Scripts\python.exe main.py conference --output html --output feishu
+```
+
 ## 快速开始
 
 如果你想先生成一套适合截图和录 GIF 的演示产物，不想先配任何 API，直接运行：

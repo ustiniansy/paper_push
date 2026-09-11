@@ -24,6 +24,53 @@ The pipeline fetches papers from `arXiv` and `Hugging Face Daily Papers`, filter
 
 ![Conference Demo](docs/assets/paper-push-conference-demo.png)
 
+## What It Sends
+
+`paper_push` produces two kinds of research updates:
+
+| Update | What readers see |
+| --- | --- |
+| Daily paper digest | Ranked papers, source, relevance score, score reason, Chinese summary, paper link, and code link when available |
+| Conference radar | Newly detected venue papers, relevant-paper counts by venue, unreleased venues, and a stable local report link |
+
+Supported delivery targets:
+
+| Target | Result |
+| --- | --- |
+| `html` | Browser-friendly reports plus `output/index.html` |
+| `markdown` | Shareable `.md` archives and stable `latest` files |
+| `feishu` | Group notification cards, optional paper selection, and optional knowledge-base document writing |
+| `telegram` | Daily and conference messages sent to a Telegram chat |
+| `slack` | Daily and conference messages sent through a Slack webhook |
+
+## Common Workflows
+
+Preview the product experience without credentials:
+
+```powershell
+.\.venv\Scripts\python.exe main.py demo
+```
+
+Run a real-paper dry run and inspect the local HTML/Markdown reports:
+
+```powershell
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --dry-run --output markdown --output html
+```
+
+Send the daily digest to a chat platform while keeping a local HTML copy:
+
+```powershell
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output feishu --output html
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output telegram --output html
+.\.venv\Scripts\python.exe main.py daily --profile multimodal --output slack --output html
+```
+
+Run only the conference radar:
+
+```powershell
+.\.venv\Scripts\python.exe main.py conference --output html --output feishu
+```
+
 ## Quickstart
 
 If you want screenshot-ready demo assets without configuring any APIs, run:
@@ -189,6 +236,10 @@ The local writer produces both archive files and stable `latest` files:
 - `conference_report_YYYYMMDD_HHMMSS.html`
 - `conference_latest.md`
 - `conference_latest.html`
+- `daily_demo.md`
+- `daily_demo.html`
+- `conference_demo.md`
+- `conference_demo.html`
 - `index.html`
 
 ## Development
